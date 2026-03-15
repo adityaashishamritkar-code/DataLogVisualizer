@@ -1,0 +1,4 @@
+package logiviz
+
+class InferenceEngine {
+}
