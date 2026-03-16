@@ -1,0 +1,25 @@
+      <!DOCTYPE html>
+      <html>
+      <head>
+          <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+          <script>mermaid.initialize({ startOnLoad: true });</script>
+          <style>
+              body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; background: #f4f7f6; }
+              .container { background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); margin-top: 50px; }
+              h1 { color: #2c3e50; }
+          </style>
+      </head>
+      <body>
+          <h1>LogiViz Dependency Graph</h1>
+          <div class="container">
+              <pre class="mermaid">
+                  graph TD
+father --> parent
+mother --> parent
+style father fill:#d4edda,stroke:#28a745
+style mother fill:#d4edda,stroke:#28a745
+
+              </pre>
+          </div>
+      </body>
+      </html>
