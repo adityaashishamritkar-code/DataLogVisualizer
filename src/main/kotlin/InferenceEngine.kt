@@ -1,9 +1,15 @@
 package logiviz
 
+import java.io.ByteArrayOutputStream
+import java.util.Base64
+import java.util.zip.Deflater
+
 class InferenceEngine {
     private val baseFacts = mutableSetOf<Atom>()
     private val rules = mutableListOf<Rule>()
     private var derivedFacts = mutableSetOf<Atom>()
+
+    private val MAX_RECURSION_DEPTH = 50
 
     fun addFact(fact: Fact) {
         baseFacts.add(fact.atom)
@@ -21,32 +27,43 @@ class InferenceEngine {
 
         while (changed) {
             val sizeBefore = derivedFacts.size
+            val newDiscoveries = mutableSetOf<Atom>()
 
             for (rule in rules) {
-                val bindings = solveBody(rule.body, mapOf())
-                for (binding in bindings) {
-                    val newFact = applyBinding(rule.head, binding)
-                    derivedFacts.add(newFact)
+                solveBody(rule.body, emptyMap()).forEach { bindings ->
+                    val newFact = applyBinding(rule.head, bindings)
+                    newDiscoveries.add(newFact)
                 }
             }
+
+            derivedFacts.addAll(newDiscoveries)
             changed = derivedFacts.size > sizeBefore
         }
     }
 
-    private fun solveBody(body: List<Atom>, currentBindings: Map<String, String>): List<Map<String, String>> {
-        if (body.isEmpty()) return listOf(currentBindings)
+    private fun solveBody(
+        body: List<Atom>,
+        bindings: Map<String, String>,
+        depth: Int = 0
+    ): Sequence<Map<String, String>> {
+        if (depth > MAX_RECURSION_DEPTH) return emptySequence()
+        if (body.isEmpty()) return sequenceOf(bindings)
 
         val first = body.first()
         val rest = body.drop(1)
-        val results = mutableListOf<Map<String, String>>()
 
-        for (fact in derivedFacts) {
-            val match = unify(first, fact, currentBindings)
-            if (match != null) {
-                results.addAll(solveBody(rest, currentBindings + match))
-            }
+        return if (first.isNegated) {
+            val groundCheck = applyBinding(first.copy(isNegated = false), bindings)
+            val hasMatch = query(groundCheck).any()
+            if (!hasMatch) solveBody(rest, bindings, depth + 1) else emptySequence()
+        } else {
+            derivedFacts.asSequence()
+                .filter { it.name == first.name }
+                .mapNotNull { fact -> unify(first, fact, bindings) }
+                .flatMap { newMatch ->
+                    solveBody(rest, bindings + newMatch, depth + 1)
+                }
         }
-        return results
     }
 
     private fun unify(query: Atom, fact: Atom, existing: Map<String, String>): Map<String, String>? {
@@ -57,57 +74,90 @@ class InferenceEngine {
             val qTerm = query.terms[i]
             val fTerm = fact.terms[i]
 
-            val boundValue = existing[qTerm] ?: newBindings[qTerm]
+            val factVal = when(fTerm) {
+                is Term.Constant -> fTerm.value.trim()
+                is Term.Variable -> fTerm.name.trim()
+            }
 
-            when {
-                query.isVariable(qTerm) -> {
-                    if (boundValue != null && boundValue != fTerm) return null
-                    newBindings[qTerm] = fTerm
+            when (qTerm) {
+                is Term.Variable -> {
+                    val boundValue = existing[qTerm.name] ?: newBindings[qTerm.name]
+                    if (boundValue != null) {
+                        if (boundValue != factVal) return null
+                    } else {
+                        newBindings[qTerm.name] = factVal
+                    }
                 }
-                qTerm != fTerm -> return null
+                is Term.Constant -> {
+                    if (qTerm.value.trim() != factVal) return null
+                }
             }
         }
         return newBindings
     }
 
     private fun applyBinding(atom: Atom, bindings: Map<String, String>): Atom {
-        val newTerms = atom.terms.map { bindings[it] ?: it }
-        return Atom(atom.name, newTerms)
+        val newTerms = atom.terms.map { term ->
+            if (term is Term.Variable) {
+                val value = bindings[term.name]
+                if (value != null) Term.Constant(value) else term
+            } else term
+        }
+        return atom.copy(terms = newTerms)
     }
 
     fun query(q: Atom): List<Map<String, String>> {
-        return derivedFacts.filter { it.name == q.name }
-            .mapNotNull { unify(q, it, emptyMap()) }
+        return derivedFacts
+            .filter { it.name == q.name }
+            .mapNotNull { fact -> unify(q, fact, emptyMap()) }
             .distinct()
     }
 
-    fun toMermaid(): String {
-        val sb = StringBuilder("graph TD\n")
+    fun getCloudGraphUrl(): String {
+        val mermaidCode = toMermaid()
+        return try {
+            val input = mermaidCode.toByteArray(Charsets.UTF_8)
+            val output = ByteArrayOutputStream()
+            val deflater = Deflater(Deflater.BEST_COMPRESSION)
+            deflater.setInput(input)
+            deflater.finish()
+            val buffer = ByteArray(1024)
+            while (!deflater.finished()) {
+                val count = deflater.deflate(buffer)
+                output.write(buffer, 0, count)
+            }
+            deflater.end()
+            val encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(output.toByteArray())
+            "https://kroki.io/mermaid/svg/$encoded"
+        } catch (e: Exception) {
+            "Error"
+        }
+    }
 
-        // 1. Draw the Logic Flow (Dependencies)
+    fun toMermaid(): String {
+        val sb = StringBuilder("graph LR\n")
+
         rules.forEach { rule ->
             rule.body.forEach { bodyAtom ->
-                // body atom "flows into" the head atom
                 sb.append("  ${bodyAtom.name} --> ${rule.head.name}\n")
             }
         }
 
-        // 2. Styling based on Knowledge Base
-        val allPredicates = rules.flatMap { it.body.map { b -> b.name } + it.head.name }.toSet() +
-                baseFacts.map { it.name }.toSet()
+        val allPredicates = (rules.map { it.head.name } + baseFacts.map { it.name }).distinct()
 
-        allPredicates.distinct().forEach { pred ->
-            val isBase = baseFacts.any { it.name == pred } && rules.none { it.head.name == pred }
-            val isRecursive = rules.any { r -> r.head.name == pred && r.body.any { b -> b.name == pred } }
+        allPredicates.forEach { pred ->
+            val isDerived = rules.any { it.head.name == pred }
+            val isBaseOnly = baseFacts.any { it.name == pred } && !isDerived
 
-            if (isBase) {
-                sb.append("  style $pred fill:#d4edda,stroke:#28a745\n") // Green for Facts
-            } else if (isRecursive) {
-                sb.append("  style $pred fill:#f8d7da,stroke:#dc3545\n") // Red for Recursion
+            if (isBaseOnly) {
+                sb.append("  $pred([$pred])\n")
+                sb.append("  style $pred fill:#f9f,stroke:#333,stroke-width:2px\n")
             } else {
-                sb.append("  style $pred fill:#e1f5fe,stroke:#01579b\n") // Blue for Rules
+                sb.append("  $pred{{$pred}}\n")
+                sb.append("  style $pred fill:#bbf,stroke:#333,stroke-width:2px\n")
             }
         }
+
         return sb.toString()
     }
 }

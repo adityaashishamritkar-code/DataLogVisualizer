@@ -1,9 +1,15 @@
 package logiviz
 
-data class Atom(val name: String, val terms: List<String>) {
-    fun isConstant(term: String) = term[0].isLowerCase()
-    fun isVariable(term: String) = term[0].isUpperCase()
+sealed class Term {
+    data class Variable(val name: String) : Term()
+    data class Constant(val value: String) : Term()
+    override fun toString(): String = when(this) {
+        is Variable -> name
+        is Constant -> value
+    }
 }
+
+data class Atom(val name: String, val terms: List<Term>, val isNegated: Boolean = false)
 
 data class Rule(val head: Atom, val body: List<Atom>)
 
